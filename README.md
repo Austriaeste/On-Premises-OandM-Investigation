@@ -99,7 +99,7 @@ cat /var/log/messages | grep "cron failed"
 メモリ使用率を確認し、異常な使用がないかを確認します。
 ### コマンド
 
-#### 1. 今日の00:00から現在時刻までのCPU使用率の推移を確認
+#### 1. メモリ使用率を確認
 ```bash
 <RHEL6>
 free -k |grep "Mem" |awk '{print($2-$4-$6-$7)/$2*100}'
