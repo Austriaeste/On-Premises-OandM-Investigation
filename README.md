@@ -9,7 +9,6 @@ Apacheサーバーのアクセス数を確認し、異常なアクセス増加�
 
 ### 環境
 - Linux (RHEL6, RHEL7, RHEL8)
-- Cisco、BIG-IP
 
 ### コマンド
 
