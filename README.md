@@ -1,6 +1,6 @@
 # On-Premises-O-M-Investigation
 
-このREADMEでは、オンプレミス環境でのトラブルシューティングに役立つ一連のコマンドを紹介します。これらのコマンドは、主にLinux環境（RHEL6、RHEL7、RHEL8）で使用できます。おまけとして、CiscoおよびF5 BIG-IPロードバランサーにも触れています。各コマンドには期待される出力例を記載し、結果の解釈を補助します。
+このREADMEでは、オンプレミス環境でのトラブルシューティングに役立つ一連のコマンドを紹介します。これらのコマンドは、主にLinux環境（RHEL6、RHEL7、RHEL8）で使用でき、F5 BIG-IPおよびCisco機器にも対応しています。各コマンドには期待される出力例と簡単な説明を記載し、問題の特定と解決を支援します。ログパスはRHEL標準の`/var/log/httpd/`を使用しますが、Debian系（`/var/log/apache2/`）の場合は適宜読み替えてください。
 
 ## アクセス数の確認
 
@@ -56,7 +56,7 @@ cat /var/log/httpd/error_log | grep "Sep 03 23:1[3-6]"
 **説明**: 指定した時間帯（例：23:13～23:16）のエラーログを確認。エラー原因（例：ファイル不存在など）を特定。
 
 #### 5. アクセス数を確認
-**注意**: ログパスは環境により異なる（例：RHELでは`/var/log/httpd/access_log`、Debian系では`/var/log/apache2/access.log`）。まず`head /var/log/httpd/access_log`でログフォーマットを確認。
+**注意**: ログパスやフォーマットは環境により異なる。まず`head /var/log/httpd/access_log`でログフォーマットを確認。
 
 ```bash
 # 10分単位
@@ -159,6 +159,33 @@ drwxr-xr-x 2 root root 4.0K Sep 03 22:00 httpd
 ```
 **説明**: 容量の大きいディレクトリ（例：`/var/log`）を調査。大きなファイル（例：`error_log`）やディレクトリを特定し、必要に応じて削除や圧縮を検討。
 
+#### 4. ログローテーション設定の確認
+```bash
+cat /etc/logrotate.d/httpd
+```
+**出力例**:
+```
+/var/log/httpd/*log {
+    weekly
+    rotate 4
+    compress
+    delaycompress
+    missingok
+}
+```
+**説明**: Apacheログのローテーション設定を確認。`rotate 4`は4世代分保持することを意味し、ディスク圧迫の原因かを評価。必要に応じて`logrotate -f /etc/logrotate.d/httpd`で強制ローテーション。
+
+#### 5. ログファイルサイズの確認
+```bash
+ls -lh /var/log/httpd/
+```
+**出力例**:
+```
+-rw-r--r-- 1 root root 1.5G Sep 03 23:15 access_log
+-rw-r--r-- 1 root root 500M Sep 03 23:15 error_log
+```
+**説明**: ログファイルのサイズを確認。巨大なログファイルがあれば、ローテーション設定を見直すか、圧縮/削除を検討。
+
 ## CPU使用率の確認
 
 ### 目的
@@ -222,6 +249,29 @@ Sep 03 23:00:01 hostname cron[5678]: (root) CMD (/usr/local/bin/heavy_script.sh)
 ```
 **説明**: cronジョブの失敗ログを確認。失敗したジョブがCPU負荷やエラーの原因かを特定。
 
+#### 6. プロセスごとのCPU/メモリ使用率
+```bash
+top -b -n 1
+```
+**出力例**:
+```
+  PID USER      PR  NI    VIRT    RES    SHR S %CPU %MEM     TIME+ COMMAND
+ 1234 root      20   0  500m   200m   100m S  15.0  10.0   0:05.12 httpd
+ 5678 user1     20   0  300m   150m    80m S  10.0   7.5   0:03.45 mysqld
+```
+**説明**: 実行中のプロセスのCPUとメモリ使用率をリアルタイムで確認。`httpd`や`mysqld`など、高負荷プロセスを特定。
+
+#### 7. 特定プロセスの詳細
+```bash
+ps -p <PID> -o pid,ppid,%cpu,%mem,cmd
+```
+**出力例**:
+```
+  PID  PPID %CPU %MEM CMD
+ 1234     1 15.0 10.0 /usr/sbin/httpd -k start
+```
+**説明**: 特定PIDのプロセス詳細を確認。親プロセス（PPID）やコマンドラインをチェックし、異常動作を調査。
+
 ## メモリ使用率の確認
 
 ### 目的
@@ -242,13 +292,167 @@ free -k | grep "Mem" | awk '{print ($2-$4-$6)/$2*100}'
 ```
 **説明**: メモリ使用率をパーセンテージで表示（例：75.5%）。80%を超える場合は、メモリリークやプロセス過多を疑い、`top`や`htop`で詳細を確認。
 
+## ネットワーク接続性の確認
+
+### 目的
+サーバやネットワーク機器間の接続性やパフォーマンスの問題を特定します。
+
+### 環境
+- Linux (RHEL6, RHEL7, RHEL8), Cisco, F5 BIG-IP
+
+### コマンド
+
+#### 1. 接続性の確認（ping）
+```bash
+ping -c 4 <target_ip>
+```
+**出力例**:
+```
+PING 192.168.1.1 (192.168.1.1) 56(84) bytes of data.
+64 bytes from 192.168.1.1: icmp_seq=1 ttl=64 time=0.123 ms
+64 bytes from 192.168.1.1: icmp_seq=2 ttl=64 time=0.134 ms
+...
+--- 192.168.1.1 ping statistics ---
+4 packets transmitted, 4 received, 0% packet loss, time 3004ms
+```
+**説明**: ターゲットIPへの到達性と応答時間を確認。パケットロスや高い遅延（例：100ms以上）があれば、ネットワーク問題を疑う。
+
+#### 2. 経路の確認（traceroute）
+```bash
+traceroute <target_ip>
+```
+**出力例**:
+```
+traceroute to 192.168.1.1 (192.168.1.1), 30 hops max, 60 byte packets
+ 1  192.168.0.1  0.234 ms  0.245 ms  0.256 ms
+ 2  192.168.1.1  0.345 ms  0.356 ms  0.367 ms
+```
+**説明**: ターゲットまでの経路を確認。異常なホップやタイムアウトがあれば、ルーティング問題を調査。
+
+#### 3. Ciscoでの接続性確認
+```bash
+ping <target_ip> repeat 5
+```
+**出力例**:
+```
+Type escape sequence to abort.
+Sending 5, 100-byte ICMP Echos to 192.168.3.1, timeout is 2 seconds:
+!!!!!
+Success rate is 100 percent (5/5), round-trip min/avg/max = 1/2/5 ms
+```
+**説明**: CiscoデバイスからターゲットIPへのpingを行い、接続性を確認。「!」（成功）または「.」（失敗）を確認。
+
+## サービスとデーモンの状態確認
+
+### 目的
+主要なサービス（例：Apache、cron）の稼働状態を確認し、停止や異常を検出します。
+
+### 環境
+- Linux (RHEL6, RHEL7, RHEL8)
+
+### コマンド
+
+#### 1. サービス状態の確認（RHEL7/8）
+```bash
+systemctl status httpd
+```
+**出力例**:
+```
+● httpd.service - The Apache HTTP Server
+   Loaded: loaded (/usr/lib/systemd/system/httpd.service; enabled; vendor preset: disabled)
+   Active: active (running) since Tue 2024-09-03 23:00:01 JST; 1 weeks ago
+```
+**説明**: `httpd`が`active (running)`であることを確認。`failed`や`dead`の場合はログ（`/var/log/httpd/error_log`）を調査。
+
+#### 2. サービス再起動（必要時）
+```bash
+systemctl restart httpd
+```
+**出力例**:
+```
+[no output if successful]
+```
+**説明**: サービスに異常があれば再起動を試行。成功したか再び`systemctl status httpd`で確認。
+
+## ファイアウォールとSELinuxの確認
+
+### 目的
+ファイアウォールやSELinuxが通信やプロセスをブロックしていないかを確認します。
+
+### 環境
+- Linux (RHEL6, RHEL7, RHEL8)
+
+### コマンド
+
+#### 1. ファイアウォールルールの確認（RHEL7/8）
+```bash
+firewall-cmd --list-all
+```
+**出力例**:
+```
+public (active)
+  services: http https
+  ports: 80/tcp
+```
+**説明**: 80番ポートが許可されていることを確認。許可されていない場合は、`firewall-cmd --add-port=80/tcp --permanent`で追加。
+
+#### 2. SELinuxの状態確認
+```bash
+getenforce
+```
+**出力例**:
+```
+Enforcing
+```
+**説明**: SELinuxが`Enforcing`の場合、Apacheや他のプロセスの動作を制限する可能性。必要に応じて`setenforce 0`で一時無効化し、動作を確認。
+
+#### 3. SELinuxエラーログの確認
+```bash
+ausearch -m avc -ts today
+```
+**出力例**:
+```
+type=AVC msg=audit(1725326401.123:456): avc:  denied  { write } for  pid=1234 comm="httpd" path="/var/www/html/file"
+```
+**説明**: SELinuxによるアクセス拒否を調査。必要に応じてポリシー修正（`audit2allow`）を検討。
+
+## システム全体のログ分析
+
+### 目的
+システム全体のログを調査し、アプリケーションやハードウェアの問題を特定します。
+
+### 環境
+- Linux (RHEL6, RHEL7, RHEL8)
+
+### コマンド
+
+#### 1. システムログの確認（RHEL7/8）
+```bash
+journalctl -p 3 -b
+```
+**出力例**:
+```
+Sep 03 23:00:01 hostname kernel: Out of memory: Kill process 1234 (httpd)
+```
+**説明**: エラーレベルのログ（`-p 3`）を確認。メモリ不足やカーネルエラーを特定。
+
+#### 2. 最近のログをリアルタイム監視
+```bash
+journalctl -f
+```
+**出力例**:
+```
+Sep 03 23:15:01 hostname httpd[1234]: [error] client denied by server configuration
+```
+**説明**: リアルタイムでログを監視し、問題発生時のエラーを即座に捕捉。
+
 ## LB（ロードバランサー）の確認
 
 ### 目的
 ロードバランサーのステータスを確認し、正常に動作しているかを確認します。
 
 ### 環境
-F5 BIG-IP
+- F5 BIG-IP
 
 ### コマンド
 
@@ -291,13 +495,43 @@ Status
 ```
 **説明**: プールとメンバーが`available`であることを確認。`unavailable`の場合は、サーバの接続性やアプリケーションエラーを調査。
 
+#### 3. ヘルスモニターの詳細確認
+```bash
+tmsh show ltm monitor http-monitor
+```
+**出力例**:
+```
+Ltm::Monitor: http-monitor
+--------------------------------
+Status: up
+Interval: 5
+Timeout: 16
+Send String: GET /health HTTP/1.1\r\n
+Receive String: OK
+```
+**説明**: ヘルスモニターの設定と状態を確認。`down`の場合は、モニター条件（例：`/health`の応答）を確認。
+
+#### 4. トラフィック統計の詳細
+```bash
+tmsh show ltm virtual http-vs
+```
+**出力例**:
+```
+Ltm::Virtual Server: http-vs
+--------------------------------
+Status: available
+Connections: 100
+Bits In/Out: 1.2M/1.5M
+```
+**説明**: バーチャルサーバのトラフィック量を確認。不均衡な分配があれば、プール設定を調査。
+
 ## Cisco機器の確認
 
 ### 目的
 Cisco機器のステータスを確認し、異常がないかを確認します。
 
 ### 環境
-Cisco
+- Cisco
 
 ### コマンド
 
@@ -378,3 +612,24 @@ show logging
 Sep 03 23:00:01: %BGP-5-ADJCHANGE: neighbor 192.168.3.1 Up
 ```
 **説明**: BGPセッションが「Up」であることを確認。「Down」があれば、ネイバー設定やネットワーク接続を調査。
+
+#### 7. インターフェースエラーの確認
+```bash
+show interfaces | include errors
+```
+**出力例**:
+```
+0 input errors, 0 CRC, 0 frame, 0 overrun, 0 ignored
+0 output errors, 0 collisions, 0 interface resets
+```
+**説明**: エラー（例：CRCやドロップ）が多ければ、物理層の問題（ケーブル、ポート）を疑う。
+
+#### 8. トラフィック統計
+```bash
+show interfaces | include packets
+```
+**出力例**:
+```
+Input packets: 123456, Output packets: 654321
+```
+**説明**: インターフェースのトラフィック量を確認。異常な偏りがあれば、ルーティングや負荷分散の問題を調査。
