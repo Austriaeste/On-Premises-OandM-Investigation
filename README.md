@@ -1,6 +1,6 @@
 # On-Premises-O-M-Investigation
 
-このREADMEでは、オンプレミス環境でのトラブルシューティングに役立つ一連のコマンドを紹介します。これらのコマンドは、主にLinux環境（RHEL6、RHEL7、RHEL8）で使用でき、F5 BIG-IPおよびCisco機器にも対応しています。各コマンドには期待される出力例と簡単な説明を記載し、問題の特定と解決を支援します。ログパスはRHEL標準の`/var/log/httpd/`を使用しますが、Debian系（`/var/log/apache2/`）の場合は適宜読み替えてください。
+このREADMEでは、オンプレミス環境でのトラブルシューティングに役立つ一連のコマンドを紹介します。これらのコマンドは、主にLinux環境（RHEL6、RHEL7、RHEL8）で使用でき、F5 BIG-IP、Cisco機器（RADIUS認証を含む）、Postfixメールサーバーに対応しています。各コマンドには期待される出力例と簡単な説明を記載し、問題の特定と解決を支援します。ApacheログパスはRHEL標準の`/var/log/httpd/`、Postfixログパスは`/var/log/maillog`、RADIUSログパスは`/var/log/radius/radius.log`を使用しますが、Debian系（`/var/log/apache2/`や`/var/log/mail.log`）の場合は適宜読み替えてください。
 
 ## アクセス数の確認
 
@@ -345,7 +345,7 @@ Success rate is 100 percent (5/5), round-trip min/avg/max = 1/2/5 ms
 ## サービスとデーモンの状態確認
 
 ### 目的
-主要なサービス（例：Apache、cron）の稼働状態を確認し、停止や異常を検出します。
+主要なサービス（例：Apache、cron、Postfix）の稼働状態を確認し、停止や異常を検出します。
 
 ### 環境
 - Linux (RHEL6, RHEL7, RHEL8)
@@ -355,24 +355,29 @@ Success rate is 100 percent (5/5), round-trip min/avg/max = 1/2/5 ms
 #### 1. サービス状態の確認（RHEL7/8）
 ```bash
 systemctl status httpd
+systemctl status postfix
 ```
 **出力例**:
 ```
 ● httpd.service - The Apache HTTP Server
    Loaded: loaded (/usr/lib/systemd/system/httpd.service; enabled; vendor preset: disabled)
    Active: active (running) since Tue 2024-09-03 23:00:01 JST; 1 weeks ago
+● postfix.service - Postfix Mail Transport Agent
+   Loaded: loaded (/usr/lib/systemd/system/postfix.service; enabled; vendor preset: disabled)
+   Active: active (running) since Tue 2024-09-03 23:00:01 JST; 1 weeks ago
 ```
-**説明**: `httpd`が`active (running)`であることを確認。`failed`や`dead`の場合はログ（`/var/log/httpd/error_log`）を調査。
+**説明**: `httpd`および`postfix`が`active (running)`であることを確認。`failed`や`dead`の場合はログ（`/var/log/httpd/error_log`や`/var/log/maillog`）を調査。
 
 #### 2. サービス再起動（必要時）
 ```bash
 systemctl restart httpd
+systemctl restart postfix
 ```
 **出力例**:
 ```
 [no output if successful]
 ```
-**説明**: サービスに異常があれば再起動を試行。成功したか再び`systemctl status httpd`で確認。
+**説明**: サービスに異常があれば再起動を試行。成功したか再び`systemctl status`で確認。
 
 ## ファイアウォールとSELinuxの確認
 
@@ -391,10 +396,10 @@ firewall-cmd --list-all
 **出力例**:
 ```
 public (active)
-  services: http https
-  ports: 80/tcp
+  services: http https smtp
+  ports: 80/tcp 25/tcp
 ```
-**説明**: 80番ポートが許可されていることを確認。許可されていない場合は、`firewall-cmd --add-port=80/tcp --permanent`で追加。
+**説明**: 80番（HTTP）および25番（SMTP）ポートが許可されていることを確認。許可されていない場合は、`firewall-cmd --add-port=25/tcp --permanent`で追加。
 
 #### 2. SELinuxの状態確認
 ```bash
@@ -404,7 +409,7 @@ getenforce
 ```
 Enforcing
 ```
-**説明**: SELinuxが`Enforcing`の場合、Apacheや他のプロセスの動作を制限する可能性。必要に応じて`setenforce 0`で一時無効化し、動作を確認。
+**説明**: SELinuxが`Enforcing`の場合、ApacheやPostfixの動作を制限する可能性。必要に応じて`setenforce 0`で一時無効化し、動作を確認。
 
 #### 3. SELinuxエラーログの確認
 ```bash
@@ -443,8 +448,175 @@ journalctl -f
 **出力例**:
 ```
 Sep 03 23:15:01 hostname httpd[1234]: [error] client denied by server configuration
+Sep 03 23:15:02 hostname postfix/smtpd[5678]: NOQUEUE: reject: RCPT from unknown[10.230.220.57]: 450 4.7.1 Client host rejected
 ```
 **説明**: リアルタイムでログを監視し、問題発生時のエラーを即座に捕捉。
+
+## Postfixメールキューの監視
+
+### 目的
+Postfixメールキューを確認し、滞留メールの数や原因（スパム、ブロックなど）を特定します。滞留状況を1分単位で監視し、メール送信の問題を調査します。
+
+### 環境
+- Linux (RHEL6, RHEL7, RHEL8), Postfix
+
+### コマンド
+
+#### 1. メールキューの全体状況を確認
+```bash
+mailq | awk 'BEGIN { RS = "" } { if ($0 !~ /^ *\(|^--/) { print $1, $7, $8, $9 } }'
+```
+**出力例**:
+```
+A1B2C3D4E5 [email protected] [email protected]
+F6G7H8I9J0 [email protected] [email protected]
+```
+**説明**: `mailq`の出力を`awk`で整形し、キューID、送信元、送信先を表示。空行や区切り線（`--`）を除外し、見やすく整理。
+
+#### 2. メールキューの滞留数を取得
+```bash
+mailq | tail -n 1
+```
+**出力例**:
+```
+-- 123 Kbytes in 45 Requests.
+```
+**説明**: キューの最後の行から、滞留メールの総数（例：45件）とデータサイズ（例：123KB）を確認。異常な増加（例：数百件以上）があれば、原因を調査。
+
+#### 3. 1分単位で滞留状況を監視
+```bash
+while true; do date "+%Y-%m-%d %H:%M:%S"; mailq | tail -n 1; sleep 60; done
+```
+**出力例**:
+```
+2024-09-03 23:15:00
+-- 123 Kbytes in 45 Requests.
+2024-09-03 23:16:00
+-- 130 Kbytes in 50 Requests.
+2024-09-03 23:17:00
+-- 145 Kbytes in 55 Requests.
+```
+**説明**: 1分ごとに現在時刻と滞留メール数を出力。急増（例：10分で100件増加）があれば、スパムやブロックの可能性を調査。
+
+#### 4. 滞留メールの原因分析（ログ確認）
+```bash
+cat /var/log/maillog | grep "postfix/smtp.*status=deferred"
+```
+**出力例**:
+```
+Sep 03 23:15:01 hostname postfix/smtp[5678]: A1B2C3D4E5: to=<[email protected]>, relay=mx.google.com[172.217.194.26]:25, delay=3600, status=deferred (host mx.google.com[172.217.194.26] said: 450 4.7.1 Client host rejected: cannot find your reverse hostname)
+```
+**説明**: `status=deferred`で遅延メールを抽出し、理由を確認。例では、Googleが逆引きホスト名欠如で拒否（450 4.7.1）。他の可能性（例：`550 5.7.1`でスパム判定）も調査。
+
+#### 5. スパムによる滞留の確認
+```bash
+cat /var/log/maillog | grep "reject.*spam"
+```
+**出力例**:
+```
+Sep 03 23:15:01 hostname postfix/smtpd[5678]: NOQUEUE: reject: RCPT from unknown[10.230.220.57]: 550 5.7.1 Service unavailable; client [10.230.220.57] blocked using zen.spamhaus.org
+```
+**説明**: スパムブロック（例：Spamhaus RBL）による拒否を特定。頻発するIPやドメインを調査し、必要に応じて`postfix/smtpd_recipient_restrictions`にRBL追加。
+
+#### 6. Googleによるブロックの確認
+```bash
+cat /var/log/maillog | grep "google.*reject"
+```
+**出力例**:
+```
+Sep 03 23:15:01 hostname postfix/smtp[5678]: A1B2C3D4E5: to=<[email protected]>, relay=mx.google.com[172.217.194.26]:25, delay=3600, status=deferred (host mx.google.com[172.217.194.26] said: 550 5.7.26 Unauthenticated email from example.com is not accepted due to DMARC policy)
+```
+**説明**: GoogleのDMARCポリシーやSPF/DKIM不備によるブロックを確認。以下の認証設定を見直す。
+
+## 送信ドメイン認証とドメインレピュテーション
+
+### 目的
+独自ドメインのメール送信における信頼性を確保し、スパム判定やブロックを防ぎます。SPF、DKIM、DMARCの設定を確認し、ドメインレピュテーションを維持します。
+
+### 環境
+- Linux (RHEL6, RHEL7, RHEL8), Postfix, DNSサーバ（BINDなど）
+
+### 概要
+- **独自ドメイン**: 企業名やサービス名を含む独自ドメイン（例：`example.com`）は、フリーメール（例：`gmail.com`）に比べ信頼性が高く、ビジネスメールに必須。
+- **SPF**: 送信元IPを認証し、なりすましを防止。DNS TXTレコードで設定。
+- **DKIM**: 電子署名でメール改ざんを検知。公開鍵をDNSに、秘密鍵をサーバに設定。
+- **DMARC**: SPF/DKIMの結果に基づき、受信側に動作（例：拒否、隔離）を指示。DNS TXTレコードで設定。
+- **ドメインレピュテーション**: 送信実績、開封率、迷惑メール報告率に基づく評価。低い場合、メールがスパム扱いされる可能性。
+
+### コマンド
+
+#### 1. SPFレコードの確認
+```bash
+dig +short TXT example.com
+```
+**出力例**:
+```
+"v=spf1 ip4:192.168.1.1 include:_spf.google.com ~all"
+```
+**説明**: ドメイン`example.com`のSPFレコードを確認。`ip4:192.168.1.1`がサーバIP、`~all`はソフトフェイル（失敗時に隔離）を示す。設定不備ならDNS修正。
+
+#### 2. DKIMレコードの確認
+```bash
+dig +short TXT default._domainkey.example.com
+```
+**出力例**:
+```
+"v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC..."
+```
+**説明**: DKIM公開鍵を確認。`default._domainkey`はセレクタ名。署名エラーがログ（`/var/log/maillog`）にあれば、鍵の一致をチェック。
+
+#### 3. DMARCレコードの確認
+```bash
+dig +short TXT _dmarc.example.com
+```
+**出力例**:
+```
+"v=DMARC1; p=reject; rua=mailto:[email protected]; ruf=mailto:[email protected]; fo=1;"
+```
+**説明**: DMARCポリシーを確認。`p=reject`は認証失敗時にメールを拒否。ログで`dmarc=fail`が頻発する場合、SPF/DKIM設定を見直す。
+
+#### 4. 正引き（FQDN確認）
+```bash
+dig +short mail.example.com
+```
+**出力例**:
+```
+192.168.1.1
+```
+**説明**: メールサーバのFQDN（例：`mail.example.com`）が正しいIPに解決されるか確認。解決しない場合、DNS Aレコードを修正。
+
+#### 5. 逆引き（PTRレコード確認）
+```bash
+dig +short -x 192.168.1.1
+```
+**出力例**:
+```
+mail.example.com.
+```
+**説明**: サーバIPの逆引きが正しいFQDNに解決されるか確認。Googleの`cannot find your reverse hostname`エラーがある場合、ISPにPTRレコード設定を依頼。
+
+#### 6. ドメインレピュテーションの確認
+```bash
+# ブラックリスト確認
+dig +short 1.1.168.192.zen.spamhaus.org
+```
+**出力例**:
+```
+127.0.0.2
+```
+**説明**: IP（例：`192.168.1.1`）がSpamhaus RBLに登録されているか確認。出力があればブラックリスト登録を示し、解除申請が必要。Google Postmaster Tools（https://postmaster.google.com）でレピュテーションも確認可能。
+
+#### 7. Postfix設定の確認（SPF/DKIM/DMARC）
+```bash
+postconf -n | grep -E 'smtpd_recipient_restrictions|smtpd_milters'
+```
+**出力例**:
+```
+smtpd_recipient_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination, check_policy_service unix:private/policyd-spf
+smtpd_milters = inet:localhost:8891
+non_smtpd_milters = inet:localhost:8891
+```
+**説明**: SPF（`policyd-spf`）、DKIM（`opendkim`）の設定を確認。`smtpd_milters`にDKIMが含まれ、`check_policy_service`でSPFが有効か確認。
 
 ## LB（ロードバランサー）の確認
 
@@ -523,15 +695,15 @@ Status: available
 Connections: 100
 Bits In/Out: 1.2M/1.5M
 ```
-**説明**: バーチャルサーバのトラフィック量を確認。不均衡な分配があれば、プール設定を調査。
+**説明**: バーチャルサーバのトラフィック量を確認。不均衡な分配があれば、プool設定を調査。
 
 ## Cisco機器の確認
 
 ### 目的
-Cisco機器のステータスを確認し、異常がないかを確認します。
+Cisco機器のステータスを確認し、異常がないかを確認します。RADIUS認証のトラブルシューティングを含め、認証失敗や遅延の原因を特定します。
 
 ### 環境
-- Cisco
+- Cisco (IOS/IOS-XE), RADIUSサーバ（例：FreeRADIUS on Linux）
 
 ### コマンド
 
@@ -633,3 +805,74 @@ show interfaces | include packets
 Input packets: 123456, Output packets: 654321
 ```
 **説明**: インターフェースのトラフィック量を確認。異常な偏りがあれば、ルーティングや負荷分散の問題を調査。
+
+#### 9. RADIUSサーバの接続状態を確認
+```bash
+show aaa servers
+```
+**出力例**:
+```
+RADIUS: id 1, priority 1, host 192.168.1.100, auth-port 1812, acct-port 1813
+        State: current UP, duration 3600s, previous duration 0s
+        Dead: total time 0s, count 0
+        Auth: request 100, timeouts 0, response time 50ms
+        Acct: request 50, timeouts 0, response time 45ms
+```
+**説明**: RADIUSサーバ（例：192.168.1.100）の状態を確認。`State: UP`なら接続正常。`DOWN`や`timeouts`が多い場合は、ネットワーク接続やサーバの稼働状態を調査。
+
+#### 10. RADIUS認証ログの確認
+```bash
+show logging | include AAA
+```
+**出力例**:
+```
+Sep 03 23:15:01: %AAA-3-AUTHFAIL: Authentication failure for user 'admin' from 192.168.1.50
+```
+**説明**: AAA（認証）関連のログを抽出し、認証失敗（例：ユーザー`admin`の失敗）を確認。ユーザー名/パスワード誤り、RADIUSサーバ設定不備、または接続問題を疑う。
+
+#### 11. RADIUS設定の確認
+```bash
+show running-config | section aaa
+```
+**出力例**:
+```
+aaa new-model
+aaa authentication login default group radius local
+aaa authorization exec default group radius local
+radius-server host 192.168.1.100 auth-port 1812 acct-port 1813 key 7 1234567890
+```
+**説明**: AAAおよびRADIUSサーバ設定を確認。`radius-server`のIP、ポート、共有鍵が正しいかチェック。鍵不一致は認証失敗の一般的な原因。
+
+#### 12. RADIUSサーバへのテスト認証
+```bash
+test aaa group radius admin cisco123 new-code
+```
+**出力例**:
+```
+User successfully authenticated
+```
+**説明**: ユーザー`admin`とパスワード`cisco123`でRADIUSサーバにテスト認証を実施。失敗する場合、RADIUSサーバログ（`/var/log/radius/radius.log`）や共有鍵を調査。
+
+#### 13. RADIUSパケットのデバッグ
+```bash
+debug aaa authentication
+debug radius
+```
+**出力例**:
+```
+Sep 03 23:15:01: RADIUS: Authenticating user 'admin' to server 192.168.1.100
+Sep 03 23:15:01: RADIUS: Received Access-Reject packet from 192.168.1.100
+```
+**説明**: RADIUS認証の詳細をデバッグ。`Access-Reject`があれば、サーバ側でユーザー認証が拒否されたことを示す。デバッグ後は`undebug all`で停止。
+
+#### 14. Linux側RADIUSサーバログの確認（FreeRADIUSの場合）
+```bash
+cat /var/log/radius/radius.log | grep "Access-Reject"
+```
+**出力例**:
+```
+Sep 03 23:15:01 radiusd[1234]: Login incorrect: [admin/<via Auth-Type>] (from client cisco-router port 0 cli 192.168.1.50)
+```
+**説明**: RADIUSサーバのログを確認し、認証失敗の理由（例：パスワード誤り）を特定。必要に応じてユーザーDBや設定（`/etc/raddb/users`）を修正。
+
+##
