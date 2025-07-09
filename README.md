@@ -543,6 +543,96 @@ Sep 03 23:15:01 hostname postfix/smtp[5678]: A1B2C3D4E5: to=<[email protected]>
 ```
 **説明**: GoogleのDMARCポリシーやSPF/DKIM不備によるブロックを確認。以下の認証設定を見直す。
 
+## DNSレコードとドメインの基礎
+
+### 目的
+メール送信やウェブサーバーの設定において、DNSレコード（Aレコード、MXレコードなど）の役割を理解し、独自ドメインやサブドメインの設定を適切に行うことで、トラブルシューティングや認証設定（SPF、DKIM、DMARC）を円滑に進める。
+
+### 環境
+- Linux (RHEL6, RHEL7, RHEL8), Postfix, DNSサーバ（BINDなど）
+
+### 概要
+DNS（Domain Name System）は、ドメイン名（例: `example.com`）をIPアドレスや他のリソースに変換する仕組みです。AレコードやMXレコードなどのDNSレコードは、ドメインの役割（ウェブ、メールなど）を定義します。独自ドメインとサブドメインは、DNS設定を通じて柔軟に運用可能で、メール送信時の認証やサービスの分離に重要です。
+
+#### DNSレコードの主要な種類
+以下の表は、メールサーバーやウェブサーバー運用でよく使うDNSレコードの概要です。
+
+| レコード種類 | 説明 | 例 | 用途 |
+|-------------|------|----|------|
+| **A** | ドメインまたはサブドメインをIPv4アドレスに紐づける。「住所」の役割を持ち、ウェブやメールサーバーの基盤となる。 | `example.com. IN A 192.168.1.1` | `example.com`にアクセスしたとき、192.168.1.1のサーバーに接続。 |
+| **MX** | ドメインのメールを受信するサーバーを指定。優先順位（数値が小さいほど優先）付きで設定。 | `example.com. IN MX 10 mail.example.com.` | `example.com`宛のメールを`mail.example.com`（優先度10）で処理。 |
+| **TXT** | テキスト情報を格納。SPF、DKIM、DMARCなどの認証設定に使用。 | `example.com. IN TXT "v=spf1 ip4:192.168.1.1 ~all"` | SPFで送信元IP（192.168.1.1）を認証。 |
+| **CNAME** | ドメインまたはサブドメインを別のドメイン名にエイリアス（別名）として紐づける。 | `www.example.com. IN CNAME example.com.` | `www.example.com`を`example.com`と同じサーバーに接続。 |
+| **PTR** | IPアドレスをドメイン名に逆引きする。メールサーバーの信頼性向上に必要。 | `1.1.168.192.in-addr.arpa. IN PTR mail.example.com.` | 192.168.1.1が`mail.example.com`として解決される。 |
+| **NS** | ドメインのDNSサーバーを指定。ドメインの管理権限を定義。 | `example.com. IN NS ns1.example.com.` | `example.com`のDNSを`ns1.example.com`が管理。 |
+
+**注意**: 
+- Aレコードはドメインの基盤であり、ウェブやメールサーバーの接続に必須。MXレコードはメール専用で、Aレコードを参照する（例: `mail.example.com`のAレコードが必要）。
+- TXTレコードはSPF/DKIM/DMARC設定に不可欠。設定ミスはメールのスパム判定や配送失敗の原因となる。
+- PTRレコードは逆引き用で、プロバイダやDNS管理者に設定依頼が必要な場合が多い。
+
+#### 独自ドメインとサブドメイン
+- **独自ドメイン**: 自分で取得・管理するドメイン（例: `example.com`）。企業やサービスのアイデンティティを表し、ウェブサイト（`example.com`）やメール（`[email protected]`）に使用。DNSでA、MX、TXTレコードを設定し、サービスを運用。
+- **サブドメイン**: 独自ドメインの階層下に作成されるドメイン（例: `mail.example.com`, `www.example.com`）。サービスを分離（メールサーバー、ウェブサーバーなど）したり、特定の機能を割り当てたりする。サブドメインごとにA、MX、TXTレコードを設定可能。
+- **相関関係**:
+  - サブドメインは独自ドメインのDNS設定に依存。`example.com`のNSレコードで指定されたDNSサーバーが、サブドメイン（`mail.example.com`）のレコードも管理。
+  - メール送信では、独自ドメイン（`example.com`）にSPF/DKIM/DMARCを設定し、サブドメイン（`mail.example.com`）にAやMXレコードを設定するケースが一般的。
+  - 例: `example.com`のMXレコードで`mail.example.com`を指定し、`mail.example.com`のAレコードでサーバーIP（192.168.1.1）を定義。
+- **運用例**:
+  - 独自ドメイン: `example.com` → Aレコードでウェブサーバー（192.168.1.1）、MXレコードでメールサーバー（`mail.example.com`）。
+  - サブドメイン: `mail.example.com` → AレコードでメールサーバーIP、TXTレコードでDKIM公開鍵。
+  - サブドメインのNSレコードを別DNSサーバーに委任可能（例: `shop.example.com`をクラウドDNSで管理）が、管理が複雑になる。
+
+**トラブルシューティングのポイント**:
+- Aレコードが未設定だと、ウェブやメールサーバーに接続できない。`dig +short example.com`でIPが返るか確認。
+- MXレコードが誤っていると、メールが届かない。`dig +short MX example.com`で正しいメールサーバー（例: `mail.example.com`）が設定されているか確認。
+- サブドメインの設定ミスは、サービス分離の失敗や認証エラーを引き起こす。`dig +short mail.example.com`で正しいIPが解決されるか確認。
+- DKIMのTXTレコード（例: `default._domainkey.example.com`）がサブドメインに設定されている場合、PostfixのDKIM署名設定（`/etc/opendkim.conf`）と一致しているか確認。
+
+### コマンド
+以下のコマンドで、DNSレコードやドメイン設定を確認できます。詳細は「送信ドメイン認証とドメインレピュテーション」セクションも参照。
+
+#### 1. Aレコードの確認
+```bash
+dig +short example.com
+```
+**出力例**:
+```
+192.168.1.1
+```
+**説明**: `example.com`のAレコードを確認。IPアドレスが返れば正しく設定済み。
+
+#### 2. MXレコードの確認
+```bash
+dig +short MX example.com
+```
+**出力例**:
+```
+10 mail.example.com.
+```
+**説明**: `example.com`のMXレコードを確認。メールサーバー（`mail.example.com`）と優先度（10）が返る。
+
+#### 3. サブドメインのAレコード確認
+```bash
+dig +short mail.example.com
+```
+**出力例**:
+```
+192.168.1.1
+```
+**説明**: サブドメイン`mail.example.com`のAレコードを確認。メールサーバーのIPが正しいかチェック。
+
+#### 4. NSレコードの確認
+```bash
+dig +short NS example.com
+```
+**出力例**:
+```
+ns1.example.com.
+ns2.example.com.
+```
+**説明**: `example.com`のDNSサーバーを確認。サブドメインも同じNSサーバーで管理されているか確認。
+
 ## 送信ドメイン認証とドメインレピュテーション
 
 ### 目的
